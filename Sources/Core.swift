@@ -58,7 +58,21 @@ enum Ink: Int, CaseIterable {
     }
 }
 
-/// Розміри позначок у пунктах екрана; у пікселі знімка їх переводить `Canvas.scale`,
+/// Товщина позначки — множник до середніх розмірів зі `Style`.
+enum Size: Int, CaseIterable {
+    case thin, medium, thick
+
+    var factor: CGFloat { [0.6, 1, 1.6][rawValue] }
+    var title: String { ["Тонко", "Середньо", "Товсто"][rawValue] }
+}
+
+/// Чим малюємо: колір і товщина. Кожен інструмент памʼятає свою.
+struct Pen: Equatable {
+    var ink: Ink
+    var size: Size = .medium
+}
+
+/// Середні розміри позначок у пунктах екрана; у пікселі знімка їх переводить `Canvas.scale`,
 /// тож стрілка однаково товста і на знімку з Retina, і з простого монітора.
 enum Style {
     static let arrow: CGFloat = 4       // товщина тіла стрілки
@@ -66,7 +80,8 @@ enum Style {
     static let marker: CGFloat = 18     // ширина смуги маркера
     static let markerAlpha: CGFloat = 0.55
     static let text: CGFloat = 20       // розмір тексту
-    static let halo: CGFloat = 1.5      // біла облямівка: позначку видно і на темному тлі
+    static let halo: CGFloat = 1.2      // темний контур стрілки й рамки: чіткий край на світлому тлі
+    static let outline = NSColor(srgbRed: 0.08, green: 0.08, blue: 0.10, alpha: 0.85)
     static let block: CGFloat = 10      // розмір квадрата в «Сховати»
 }
 
@@ -74,10 +89,10 @@ enum Style {
 
 /// Одна позначка. Координати — у пікселях знімка, початок у верхньому лівому куті.
 enum Mark {
-    case arrow(from: CGPoint, to: CGPoint, ink: Ink)
-    case rect(CGRect, ink: Ink)
-    case marker([CGPoint], ink: Ink)
-    case text(String, at: CGPoint, ink: Ink)
+    case arrow(from: CGPoint, to: CGPoint, pen: Pen)
+    case rect(CGRect, pen: Pen)
+    case marker([CGPoint], pen: Pen)
+    case text(String, at: CGPoint, pen: Pen)
     case blur(CGRect)
 
     /// Чи лишати позначку: клік без руху не має залишати сміття.
@@ -156,8 +171,8 @@ struct Canvas {
     }
 
     /// Шрифт тексту; той самий бере поле введення у вікні (з `zoom`), щоб текст не стрибав після Enter.
-    func textFont(zoom: CGFloat = 1) -> NSFont {
-        .systemFont(ofSize: Style.text * scale * zoom, weight: .bold)
+    func textFont(_ size: Size, zoom: CGFloat = 1) -> NSFont {
+        .systemFont(ofSize: Style.text * size.factor * scale * zoom, weight: .bold)
     }
 
     /// CGImage малюється догори дриґом у системі з y вниз — тут його перевертаємо назад.
@@ -171,47 +186,49 @@ struct Canvas {
 
     private func draw(_ mark: Mark, _ ctx: CGContext) {
         let k = scale
-        let white = NSColor.white.cgColor
+        let outline = Style.outline.cgColor
         ctx.saveGState()
         defer { ctx.restoreGState() }
         ctx.setLineJoin(.round)
         ctx.setLineCap(.round)
         switch mark {
-        case let .arrow(a, b, ink):
-            guard let path = Self.arrowPath(from: a, to: b, width: Style.arrow * k) else { return }
+        case let .arrow(a, b, pen):
+            guard let path = Self.arrowPath(from: a, to: b, width: Style.arrow * pen.size.factor * k) else { return }
             ctx.addPath(path)
-            ctx.setStrokeColor(white)
+            ctx.setStrokeColor(outline)
             ctx.setLineWidth(2 * Style.halo * k)
             ctx.strokePath()
             ctx.addPath(path)
-            ctx.setFillColor(ink.color.cgColor)
+            ctx.setFillColor(pen.ink.color.cgColor)
             ctx.fillPath()
-        case let .rect(r, ink):
+        case let .rect(r, pen):
+            let w = Style.rect * pen.size.factor
             let path = CGPath(roundedRect: r, cornerWidth: 3 * k, cornerHeight: 3 * k, transform: nil)
             ctx.addPath(path)
-            ctx.setStrokeColor(white)
-            ctx.setLineWidth((Style.rect + 2 * Style.halo) * k)
+            ctx.setStrokeColor(outline)
+            ctx.setLineWidth((w + 2 * Style.halo) * k)
             ctx.strokePath()
             ctx.addPath(path)
-            ctx.setStrokeColor(ink.color.cgColor)
-            ctx.setLineWidth(Style.rect * k)
+            ctx.setStrokeColor(pen.ink.color.cgColor)
+            ctx.setLineWidth(w * k)
             ctx.strokePath()
-        case let .marker(points, ink):
+        case let .marker(points, pen):
             guard let first = points.first else { return }
             ctx.move(to: first)
             for p in points.dropFirst() { ctx.addLine(to: p) }
             // Множення кольорів: текст під маркером лишається чорним, а смуга — одним тоном,
             // навіть там, де вона перетинає сама себе.
             ctx.setBlendMode(.multiply)
-            ctx.setStrokeColor(ink.color.withAlphaComponent(Style.markerAlpha).cgColor)
-            ctx.setLineWidth(Style.marker * k)
+            ctx.setStrokeColor(pen.ink.color.withAlphaComponent(Style.markerAlpha).cgColor)
+            ctx.setLineWidth(Style.marker * pen.size.factor * k)
             ctx.strokePath()
-        case let .text(s, p, ink):
-            let font = textFont()
+        case let .text(s, p, pen):
+            // Біла облямівка лишається: на темному тлі вона робить текст читабельним.
+            let font = textFont(pen.size)
             let halo = NSAttributedString(string: s, attributes: [
                 .font: font, .strokeColor: NSColor.white, .strokeWidth: 30,
             ])
-            let body = NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: ink.color])
+            let body = NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: pen.ink.color])
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
             halo.draw(at: p)

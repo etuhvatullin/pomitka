@@ -9,20 +9,21 @@ final class EditorView: NSView, NSTextFieldDelegate {
     private(set) var marks: [Mark] = []
     private var draft: Mark?
     private(set) var tool: Tool = .arrow
-    /// Кожен інструмент памʼятає свій колір: маркер жовтий, решта червоні.
-    private var inks = Dictionary(uniqueKeysWithValues: Tool.allCases.map { ($0, $0.defaultInk) })
-    var ink: Ink { inks[tool] ?? tool.defaultInk }
+    /// Кожен інструмент памʼятає свій колір і товщину: маркер жовтий, решта червоні.
+    private var pens = Dictionary(uniqueKeysWithValues: Tool.allCases.map { ($0, Pen(ink: $0.defaultInk)) })
+    var pen: Pen { pens[tool] ?? Pen(ink: tool.defaultInk) }
 
     var onChange: () -> Void = {}
     var onCopy: () -> Void = {}
     var onClose: () -> Void = {}
     var onTool: (Tool) -> Void = { _ in }
+    var onStep: (Int) -> Void = { _ in }
 
     private var start = CGPoint.zero
     private var points: [CGPoint] = []
     private var field: NSTextField?
     private var fieldOrigin = CGPoint.zero
-    private var fieldInk = Ink.red
+    private var fieldPen = Pen(ink: .red)
     var isEditingText: Bool { field != nil }
 
     init(canvas: Canvas, size: NSSize) {
@@ -47,10 +48,24 @@ final class EditorView: NSView, NSTextFieldDelegate {
     }
 
     func setInk(_ i: Ink) {
-        inks[tool] = i
+        var p = pen   // окремою копією: читати pen під час запису в pens не можна
+        p.ink = i
+        pens[tool] = p
         if let f = field {
-            fieldInk = i
+            fieldPen.ink = i
             f.textColor = i.color
+        }
+    }
+
+    func setSize(_ s: Size) {
+        var p = pen   // окремою копією: читати pen під час запису в pens не можна
+        p.size = s
+        pens[tool] = p
+        if let f = field {
+            fieldPen.size = s
+            f.font = canvas.textFont(s, zoom: zoom)
+            controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            f.frame.size.height = f.fittingSize.height
         }
     }
 
@@ -99,7 +114,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case .text: beginText(at: p)
         case .marker:
             points = [p]
-            draft = .marker(points, ink: ink)
+            draft = .marker(points, pen: pen)
         default: draft = nil
         }
         needsDisplay = true
@@ -108,13 +123,13 @@ final class EditorView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with event: NSEvent) {
         let p = imagePoint(event)
         switch tool {
-        case .arrow: draft = .arrow(from: start, to: p, ink: ink)
-        case .rect: draft = .rect(rectBetween(start, p), ink: ink)
+        case .arrow: draft = .arrow(from: start, to: p, pen: pen)
+        case .rect: draft = .rect(rectBetween(start, p), pen: pen)
         case .blur: draft = .blur(rectBetween(start, p))
         case .marker:
             // Із Shift — рівна лінія: так зручно провести по рядку тексту.
             if event.modifierFlags.contains(.shift) { points = [start, p] } else { points.append(p) }
-            draft = .marker(points, ink: ink)
+            draft = .marker(points, pen: pen)
         case .text: return
         }
         needsDisplay = true
@@ -135,7 +150,13 @@ final class EditorView: NSView, NSTextFieldDelegate {
         default:
             // Цифри 1…5 — інструменти; беремо фізичні клавіші, щоб працювало і в українській розкладці.
             let digits: [UInt16: Tool] = [18: .arrow, 19: .rect, 20: .marker, 21: .text, 23: .blur]
-            if let t = digits[event.keyCode] { onTool(t) } else { super.keyDown(with: event) }
+            if let t = digits[event.keyCode] {
+                onTool(t)
+            } else if event.keyCode == 33 || event.keyCode == 30 {
+                onStep(event.keyCode == 33 ? -1 : 1)   // [ — тонше, ] — товще (фізичні клавіші)
+            } else {
+                super.keyDown(with: event)
+            }
         }
     }
 
@@ -143,8 +164,8 @@ final class EditorView: NSView, NSTextFieldDelegate {
 
     private func beginText(at p: CGPoint) {
         let f = NSTextField(string: "")
-        f.font = canvas.textFont(zoom: zoom)
-        f.textColor = ink.color
+        f.font = canvas.textFont(pen.size, zoom: zoom)
+        f.textColor = pen.ink.color
         f.isBordered = false
         f.drawsBackground = true
         f.backgroundColor = NSColor.white.withAlphaComponent(0.85)
@@ -159,7 +180,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         window?.makeFirstResponder(f)
         field = f
         fieldOrigin = p
-        fieldInk = ink
+        fieldPen = pen
     }
 
     /// Поле росте разом із текстом.
@@ -183,7 +204,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         let s = f.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         f.removeFromSuperview()
         window?.makeFirstResponder(self)
-        if !s.isEmpty { append(.text(s, at: fieldOrigin, ink: fieldInk)) }
+        if !s.isEmpty { append(.text(s, at: fieldOrigin, pen: fieldPen)) }
     }
 
     private func dropText() {
@@ -226,6 +247,7 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
     let editor: EditorView
     private let tools = NSSegmentedControl()
     private let colors = NSSegmentedControl()
+    private let sizes = NSSegmentedControl()
     private let undoButton = NSButton(title: "Крок назад", target: nil, action: nil)
     private let copyButton = NSButton(title: "Копіювати", target: nil, action: nil)
     private var copied = false
@@ -254,7 +276,7 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
         bar.orientation = .horizontal
         bar.spacing = 10
         bar.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-        bar.setViews([tools, colors], in: .leading)
+        bar.setViews([tools, colors, sizes], in: .leading)
         let hint = NSTextField(labelWithString: "⏎ — копіювати й закрити   Esc — закрити")
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         hint.textColor = .secondaryLabelColor
@@ -293,6 +315,7 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
         editor.onCopy = { [weak self] in self?.copyAndClose() }
         editor.onClose = { [weak self] in self?.window?.performClose(nil) }
         editor.onTool = { [weak self] t in self?.choose(t) }
+        editor.onStep = { [weak self] d in self?.step(d) }
         syncButtons()
     }
 
@@ -320,6 +343,16 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
         colors.target = self
         colors.action = #selector(pickInk)
 
+        sizes.segmentCount = Size.allCases.count
+        sizes.trackingMode = .selectOne
+        for s in Size.allCases {
+            sizes.setImage(Self.line(s), forSegment: s.rawValue)
+            sizes.setWidth(30, forSegment: s.rawValue)
+            sizes.setToolTip("\(s.title) — клавіші [ і ]", forSegment: s.rawValue)
+        }
+        sizes.target = self
+        sizes.action = #selector(pickSize)
+
         undoButton.target = self
         undoButton.action = #selector(undo)
         undoButton.toolTip = "Прибрати останню позначку — ⌘Z"
@@ -339,11 +372,33 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Значок товщини: риска, товща з кожним кроком.
+    private static func line(_ s: Size) -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 14), flipped: false) { rect in
+            NSColor.black.setFill()
+            let h = 2 + CGFloat(s.rawValue) * 2.5
+            NSBezierPath(roundedRect: NSRect(x: 1, y: (rect.height - h) / 2, width: 14, height: h),
+                         xRadius: h / 2, yRadius: h / 2).fill()
+            return true
+        }
+        image.isTemplate = true   // колір бере з теми: світла чи темна
+        return image
+    }
+
     private func choose(_ t: Tool) {
         editor.setTool(t)
         tools.selectedSegment = t.rawValue
-        colors.selectedSegment = editor.ink.rawValue
+        colors.selectedSegment = editor.pen.ink.rawValue
+        sizes.selectedSegment = editor.pen.size.rawValue
         colors.isEnabled = t != .blur
+        sizes.isEnabled = t != .blur
+    }
+
+    /// [ і ] — тонше / товще для поточного інструмента.
+    private func step(_ delta: Int) {
+        guard editor.tool != .blur, let s = Size(rawValue: editor.pen.size.rawValue + delta) else { return }
+        editor.setSize(s)
+        sizes.selectedSegment = s.rawValue
     }
 
     private func syncButtons() { undoButton.isEnabled = !editor.marks.isEmpty }
@@ -357,6 +412,12 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
     @objc private func pickInk() {
         guard let i = Ink(rawValue: colors.selectedSegment) else { return }
         editor.setInk(i)
+    }
+
+    @objc private func pickSize() {
+        guard let s = Size(rawValue: sizes.selectedSegment) else { return }
+        editor.setSize(s)
+        window?.makeFirstResponder(editor)
     }
 
     @objc private func undo() { editor.undo() }

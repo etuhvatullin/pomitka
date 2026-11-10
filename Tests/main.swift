@@ -70,11 +70,11 @@ let shot = makeShot()
 let canvas = Canvas(image: shot, scale: 2)
 let hidden = CGRect(x: 70, y: 210, width: 480, height: 80)   // рядок «Пароль»
 let marks: [Mark] = [
-    .marker([CGPoint(x: 70, y: 130), CGPoint(x: 700, y: 130)], ink: .yellow),
+    .marker([CGPoint(x: 70, y: 130), CGPoint(x: 700, y: 130)], pen: Pen(ink: .yellow)),
     .blur(hidden),
-    .arrow(from: CGPoint(x: 300, y: 720), to: CGPoint(x: 700, y: 450), ink: .red),
-    .rect(CGRect(x: 60, y: 320, width: 520, height: 90), ink: .blue),
-    .text("Перевір суму", at: CGPoint(x: 760, y: 380), ink: .green),
+    .arrow(from: CGPoint(x: 300, y: 720), to: CGPoint(x: 700, y: 450), pen: Pen(ink: .red)),
+    .rect(CGRect(x: 60, y: 320, width: 520, height: 90), pen: Pen(ink: .blue)),
+    .text("Перевір суму", at: CGPoint(x: 760, y: 380), pen: Pen(ink: .green)),
 ]
 
 print("Малювання")
@@ -101,9 +101,22 @@ check(px.at(1180, 20) == (255, 255, 255), "поза позначками зні�
 let box = px.at(900, 700)
 check(abs(box.r - 51) < 4 && abs(box.b - 102) < 4, "кольори знімка не зсунулись \(box)")
 
+let around = px.count(in: CGRect(x: 490, y: 575, width: 20, height: 20)) { $0.r + $0.g + $0.b < 200 }
+check(around > 10, "у стрілки темний контур (\(around) темних пікселів біля тіла)")
+
+print("Товщина")
+func markerHeight(_ size: Size) -> Int {
+    let img = canvas.export([.marker([CGPoint(x: 600, y: 600), CGPoint(x: 780, y: 600)], pen: Pen(ink: .yellow, size: size))])!
+    return Pixels(img).count(in: CGRect(x: 700, y: 540, width: 1, height: 120)) { $0.b < 200 }
+}
+let thin = markerHeight(.thin), thick = markerHeight(.thick)
+check(abs(thin - 22) <= 2 && abs(thick - 58) <= 2, "маркер: тонкий \(thin) пікс., товстий \(thick) пікс. (очікую ≈22 і ≈58)")
+let bigText = canvas.textFont(.thick).pointSize, smallText = canvas.textFont(.thin).pointSize
+check(bigText > smallText * 2.5, "текст: товстий \(bigText) проти тонкого \(smallText)")
+
 print("Дрібниці")
-check(!Mark.arrow(from: .zero, to: CGPoint(x: 2, y: 2), ink: .red).isVisible(minSize: 6), "клік без руху — не стрілка")
-check(!Mark.marker([.zero], ink: .yellow).isVisible(minSize: 6), "маркер з однієї точки не лишається")
+check(!Mark.arrow(from: .zero, to: CGPoint(x: 2, y: 2), pen: Pen(ink: .red)).isVisible(minSize: 6), "клік без руху — не стрілка")
+check(!Mark.marker([.zero], pen: Pen(ink: .yellow)).isVisible(minSize: 6), "маркер з однієї точки не лишається")
 check(rectBetween(CGPoint(x: 10, y: 50), CGPoint(x: 4, y: 20)) == CGRect(x: 4, y: 20, width: 6, height: 30),
       "рамку можна тягнути в будь-який бік")
 
