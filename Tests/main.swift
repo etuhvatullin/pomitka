@@ -157,6 +157,12 @@ if let view = window.window?.contentView, let rep = view.bitmapImageRepForCachin
     try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("window.png"))
     check(view.bounds.width >= window.editor.bounds.width, "смуга інструментів не вужча за знімок")
 }
+// Курсор маркера — коло завширшки зі смугу: товстий маркер на «Retina» = 18 пт × 1,6 × 2 пікс. × масштаб вікна.
+window.editor.setTool(.marker)
+window.editor.setSize(.thick)
+let zoomed = window.editor.bounds.width / canvas.size.width
+check(abs(window.editor.brushDiameter - 18 * 1.6 * 2 * zoomed) < 0.01,
+      "курсор маркера завширшки зі смугу (\(window.editor.brushDiameter) пт)")
 // Малий знімок: вікно не стискається вужче за смугу інструментів.
 let tiny = EditorWindow(canvas: Canvas(image: shot.cropping(to: CGRect(x: 0, y: 0, width: 200, height: 100))!, scale: 2),
                         title: "малий", screen: nil)

@@ -44,13 +44,14 @@ final class EditorView: NSView, NSTextFieldDelegate {
     func setTool(_ t: Tool) {
         commitText()
         tool = t
-        window?.invalidateCursorRects(for: self)
+        refreshCursor()
     }
 
     func setInk(_ i: Ink) {
         var p = pen   // окремою копією: читати pen під час запису в pens не можна
         p.ink = i
         pens[tool] = p
+        refreshCursor()
         if let f = field {
             fieldPen.ink = i
             f.textColor = i.color
@@ -61,6 +62,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         var p = pen   // окремою копією: читати pen під час запису в pens не можна
         p.size = s
         pens[tool] = p
+        refreshCursor()
         if let f = field {
             fieldPen.size = s
             f.font = canvas.textFont(s, zoom: zoom)
@@ -93,8 +95,41 @@ final class EditorView: NSView, NSTextFieldDelegate {
         ctx.restoreGState()
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair)
+    override func resetCursorRects() { addCursorRect(bounds, cursor: cursor) }
+
+    /// Курсор інструмента: у маркера — коло завширшки зі смугу, яку він залишить, і в його кольорі,
+    /// щоб було видно межі зафарбованого ще до натискання.
+    private var cursor: NSCursor {
+        switch tool {
+        case .text: return .iBeam
+        case .marker: break
+        default: return .crosshair
+        }
+        let d = brushDiameter
+        let side = ceil(d + 4)
+        let fill = pen.ink.color.withAlphaComponent(0.35)
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2))
+            fill.setFill()
+            ring.fill()
+            NSColor.white.setStroke()       // подвійне кільце — видно і на світлому, і на темному
+            ring.lineWidth = 3
+            ring.stroke()
+            NSColor.black.withAlphaComponent(0.8).setStroke()
+            ring.lineWidth = 1
+            ring.stroke()
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: side / 2, y: side / 2))
+    }
+
+    /// Ширина смуги маркера на екрані, у пунктах вікна.
+    var brushDiameter: CGFloat { max(6, Style.marker * pen.size.factor * canvas.scale * zoom) }
+
+    /// Новий курсор одразу, без чекання, поки рушиш мишею.
+    private func refreshCursor() {
+        window?.invalidateCursorRects(for: self)
+        if let w = window, bounds.contains(convert(w.mouseLocationOutsideOfEventStream, from: nil)) { cursor.set() }
     }
 
     // MARK: миша
