@@ -296,16 +296,74 @@ struct Canvas {
 
 // MARK: - Тека зі знімками
 
-/// Куди macOS кладе знімки. Панель ⌘⇧5 пише власний ключ `location-screenshot` (окремо від відео),
-/// старий спосіб — `location`; нічого немає — робочий стіл.
-func screenshotFolder() -> URL {
-    for key in ["location-screenshot", "location"] {
-        if let path = CFPreferencesCopyAppValue(key as CFString, "com.apple.screencapture" as CFString) as? String,
-           !path.isEmpty {
-            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
-        }
+/// Налаштування системних знімків: куди їх класти й чи показувати мініатюру. У перевірці — тестовий домен,
+/// щоб не чіпати справжні. `store` — де Помітка тримає копію попередніх значень для «Повернути».
+struct ScreenshotSettings {
+    var domain = "com.apple.screencapture"
+    var store = UserDefaults.standard
+
+    /// Тека, яку пропонує Помітка: робочий стіл і «Документи» macOS закриває від програм.
+    static let ourFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Знімки", isDirectory: true)
+    /// Ключі, які ми міняємо.
+    static let keys = ["location", "location-screenshot", "show-thumbnail"]
+    /// Позначка в копії «ключа не було» (UserDefaults не зберігає nil).
+    static let absent = "<немає>"
+    private static let backupKey = "screenshotBackup"
+
+    func value(_ key: String) -> Any? {
+        CFPreferencesAppSynchronize(domain as CFString)
+        return CFPreferencesCopyAppValue(key as CFString, domain as CFString)
     }
-    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
+
+    /// Куди macOS кладе знімки. Панель ⌘⇧5 пише власний ключ `location-screenshot` (окремо від відео),
+    /// старий спосіб — `location`; нічого немає — робочий стіл.
+    var folder: URL {
+        for key in ["location-screenshot", "location"] {
+            if let path = value(key) as? String, !path.isEmpty {
+                return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+            }
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
+    }
+
+    /// Уже налаштовано під Помітку: знімки йдуть у ~/Знімки, мініатюри немає.
+    var isReady: Bool {
+        folder.standardizedFileURL.path == Self.ourFolder.standardizedFileURL.path
+            && (value("show-thumbnail") as? Bool) == false
+    }
+
+    /// Знімки — у ~/Знімки, мініатюру — вимкнути. Попередні значення зберігає один раз,
+    /// щоб «Повернути» вело до стану до Помітки, а не до проміжного.
+    func setUp() {
+        if store.dictionary(forKey: Self.backupKey) == nil {
+            var backup: [String: Any] = [:]
+            for key in Self.keys { backup[key] = value(key) ?? Self.absent }
+            store.set(backup, forKey: Self.backupKey)
+        }
+        try? FileManager.default.createDirectory(at: Self.ourFolder, withIntermediateDirectories: true)
+        write(["location": Self.ourFolder.path, "location-screenshot": Self.ourFolder.path, "show-thumbnail": false])
+    }
+
+    /// Повернути як було. Копії немає (налаштовували не через Помітку) — прибрати ключі:
+    /// macOS повертається до своїх типових (робочий стіл, мініатюра є).
+    func restore() {
+        let backup = store.dictionary(forKey: Self.backupKey) ?? [:]
+        var values: [String: Any?] = [:]
+        for key in Self.keys {
+            let old = backup[key]
+            values.updateValue((old as? String) == Self.absent ? nil : old, forKey: key)
+        }
+        write(values)
+        store.removeObject(forKey: Self.backupKey)
+    }
+
+    /// nil — прибрати ключ.
+    private func write(_ values: [String: Any?]) {
+        for (key, value) in values {
+            CFPreferencesSetAppValue(key as CFString, value.map { $0 as AnyObject }, domain as CFString)
+        }
+        CFPreferencesAppSynchronize(domain as CFString)
+    }
 }
 
 /// Усі PNG у теці, від старших до новіших. Приховані пропускаємо: система спершу пише

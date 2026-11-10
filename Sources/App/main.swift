@@ -3,12 +3,12 @@ import AppKit
 import ServiceManagement
 import os
 
-let log = Logger(subsystem: "local.pomitka", category: "app")
+let log = Logger(subsystem: "io.github.etuhvatullin.pomitka", category: "app")
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
-    private(set) var folder = screenshotFolder()
+    private(set) var folder = ScreenshotSettings().folder
     /// Дата створення найновішого вже баченого знімка; відкриваємо лише новіші. За датою, а не назвою:
     /// перейменований старий файл не відкриється вдруге, а новий під старою назвою не загубиться.
     private var seenUntil = Date.distantPast
@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var editors: [EditorWindow] = []
     private let defaults = UserDefaults.standard
     private let launchAgent = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/LaunchAgents/local.pomitka.plist")
+        .appendingPathComponent("Library/LaunchAgents/io.github.etuhvatullin.pomitka.plist")
 
     /// «Відкривати одразу після знімка» — увімкнено, поки людина не вимкне в меню.
     private var autoOpen: Bool {
@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
 
+        offerScreenshotSetup()
         watchFolder()
         // Раз на 30 с: чи не змінили теку знімків у ⌘⇧5 і чи не зникла сама тека.
         recheck = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshFolder() }
@@ -45,6 +46,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !loginEnabled() { toggleLogin() }
         }
         log.notice("стежу за \(self.folder.path, privacy: .public)")
+    }
+
+    // MARK: налаштування системних знімків
+
+    private let settings = ScreenshotSettings()
+
+    /// Перший запуск: спитати й налаштувати. Без згоди людини системні налаштування не чіпаємо.
+    private func offerScreenshotSetup() {
+        guard !defaults.bool(forKey: "setupAsked") else { return }
+        defaults.set(true, forKey: "setupAsked")
+        guard !settings.isReady else { return }
+        activate()
+        let a = NSAlert()
+        a.messageText = "Налаштувати знімки екрана для Помітки?"
+        a.informativeText = """
+            Знімки (⌘⇧4) зберігатимуться в теці «Знімки» у твоїй домашній теці: робочий стіл і «Документи» \
+            macOS закриває від програм. Мініатюра в кутку вимкнеться: поки вона є, macOS записує файл лише \
+            через кілька секунд. Повернути все як було — у меню Помітки.
+            """
+        a.addButton(withTitle: "Налаштувати")
+        a.addButton(withTitle: "Не зараз")
+        if a.runModal() == .alertFirstButtonReturn { setUpScreenshots() }
+    }
+
+    @objc func setUpScreenshots() {
+        settings.setUp()
+        applySettings()
+    }
+
+    @objc func restoreScreenshots() {
+        settings.restore()
+        applySettings()
+    }
+
+    /// Системна служба знімків підхоплює нові налаштування лише після перезапуску.
+    private func applySettings() {
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        kill.arguments = ["SystemUIServer"]
+        try? kill.run()
+        kill.waitUntilExit()
+        refreshFolder()
+        log.notice("налаштування знімків змінено, тека: \(self.folder.path, privacy: .public)")
     }
 
     // MARK: стеження за текою
@@ -80,8 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Людина могла змінити теку в ⌘⇧5 або видалити її — тоді стежимо заново.
     private func refreshFolder() {
-        CFPreferencesAppSynchronize("com.apple.screencapture" as CFString)
-        let now = screenshotFolder()
+        let now = settings.folder
         guard now.standardizedFileURL.path != folder.standardizedFileURL.path
               || !FileManager.default.fileExists(atPath: folder.path) else { return }
         folder = now
@@ -140,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("Відкривати одразу після знімка", #selector(toggleAuto)).state = autoOpen ? .on : .off
         add("Запускати при вході в систему", #selector(toggleLogin)).state = loginEnabled() ? .on : .off
         add("Показати теку зі знімками", #selector(showFolder))
+        if settings.isReady {
+            add("Повернути налаштування знімків", #selector(restoreScreenshots))
+        } else {
+            add("Налаштувати знімки для Помітки", #selector(setUpScreenshots))
+        }
         menu.addItem(.separator())
         add("Вийти з Помітки", #selector(quit))
     }
@@ -199,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } catch {
             let agent: [String: Any] = [
-                "Label": "local.pomitka",
+                "Label": "io.github.etuhvatullin.pomitka",
                 "ProgramArguments": ["/usr/bin/open", Bundle.main.bundlePath],
                 "RunAtLoad": true,
             ]

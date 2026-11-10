@@ -138,8 +138,33 @@ FileManager.default.createFile(atPath: tmp.appendingPathComponent("Запис е
 let names = screenshots(in: tmp).map(\.lastPathComponent)
 check(names == ["a.png", "b.png"], "лише PNG, без прихованих і відео: \(names)")
 
+print("Налаштування знімків (тестовий домен, справжні не чіпаємо)")
+let suite = "io.github.etuhvatullin.pomitka.selftest.store"
+let store = UserDefaults(suiteName: suite)!
+store.removePersistentDomain(forName: suite)
+let testDomain = "io.github.etuhvatullin.pomitka.selftest.screencapture" as CFString
+for key in ScreenshotSettings.keys { CFPreferencesSetAppValue(key as CFString, nil, testDomain) }
+CFPreferencesSetAppValue("location-screenshot" as CFString, "~/Documents/скріни" as CFString, testDomain)
+CFPreferencesAppSynchronize(testDomain)
+let prefs = ScreenshotSettings(domain: testDomain as String, store: store)
+let docs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/скріни").path
+check(prefs.folder.path == docs && !prefs.isReady, "до налаштування: тека з ⌘⇧5, не готово")
+prefs.setUp()
+check(prefs.isReady && prefs.folder.path == ScreenshotSettings.ourFolder.path, "після налаштування: ~/Знімки, мініатюри немає")
+prefs.setUp()   // вдруге — копія попередніх значень не має перезаписатись проміжними
+prefs.restore()
+check(prefs.value("location-screenshot") as? String == "~/Documents/скріни", "«Повернути» відновило теку з ⌘⇧5")
+check(prefs.value("location") == nil && prefs.value("show-thumbnail") == nil, "«Повернути» прибрало ключі, яких не було")
+prefs.setUp()
+store.removePersistentDomain(forName: suite)   // копії немає — повертаємось до типових macOS
+prefs.restore()
+check(prefs.value("location-screenshot") == nil && prefs.folder.lastPathComponent == "Desktop", "без копії — типові: робочий стіл")
+for key in ScreenshotSettings.keys { CFPreferencesSetAppValue(key as CFString, nil, testDomain) }
+CFPreferencesAppSynchronize(testDomain)
+store.removePersistentDomain(forName: suite)
+
 print("Буфер обміну (окрема дошка)")
-let board = NSPasteboard(name: NSPasteboard.Name("local.pomitka.selftest"))
+let board = NSPasteboard(name: NSPasteboard.Name("io.github.etuhvatullin.pomitka.selftest"))
 check(canvas.copy(marks, to: board), "копіювання вдалось")
 let pasted = board.data(forType: .png).flatMap { NSBitmapImageRep(data: $0) }
 check(pasted?.pixelsWide == 1200 && pasted?.pixelsHigh == 800, "у буфері PNG повного розміру")
