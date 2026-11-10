@@ -8,10 +8,12 @@ let log = Logger(subsystem: "local.pomitka", category: "app")
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
-    let folder = screenshotFolder()
-    /// Імена файлів, які вже бачили: знімки, що лежали до запуску, повторно не відкриваємо.
-    private var seen = Set<String>()
+    private(set) var folder = screenshotFolder()
+    /// Дата створення найновішого вже баченого знімка; відкриваємо лише новіші. За датою, а не назвою:
+    /// перейменований старий файл не відкриється вдруге, а новий під старою назвою не загубиться.
+    private var seenUntil = Date.distantPast
     private var watch: DispatchSourceFileSystemObject?
+    private var recheck: Timer?
     private var editors: [EditorWindow] = []
     private let defaults = UserDefaults.standard
     private let launchAgent = FileManager.default.homeDirectoryForCurrentUser
@@ -33,9 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
 
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        seen = Set(screenshots(in: folder).map(\.lastPathComponent))
-        startWatching()
+        watchFolder()
+        // Раз на 30 с: чи не змінили теку знімків у ⌘⇧5 і чи не зникла сама тека.
+        recheck = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshFolder() }
 
         // Без запуску при вході програма марна — вмикаємо один раз сами, далі вирішує людина в меню.
         if !defaults.bool(forKey: "loginSetUp") {
@@ -47,25 +49,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: стеження за текою
 
-    private func startWatching() {
+    /// Почати стежити за поточною текою; усе, що вже в ній лежить, вважаємо баченим.
+    private func watchFolder() {
+        watch?.cancel()
+        watch = nil
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        seenUntil = screenshots(in: folder).map(creationDate).max() ?? .distantPast
         let fd = Darwin.open(folder.path, O_EVTONLY)
         guard fd >= 0 else {
             log.error("не відкрити теку \(self.folder.path, privacy: .public)")
             return
         }
-        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
-        src.setEventHandler { [weak self] in
+        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .delete, .rename],
+                                                            queue: .main)
+        src.setEventHandler { [weak self, weak src] in
+            guard let self, let src else { return }
+            if !src.data.isDisjoint(with: [.delete, .rename]) {
+                // Теку видалили чи перейменували — старий дескриптор дивиться в нікуди; відкриваємо заново.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.watchFolder() }
+                return
+            }
             // Дати системі дописати файл до кінця.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self?.checkFolder() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.checkFolder() }
         }
         src.setCancelHandler { close(fd) }
         src.resume()
         watch = src
+        checkFolder()   // знімок міг зʼявитись між переліком файлів і стартом стеження
+    }
+
+    /// Людина могла змінити теку в ⌘⇧5 або видалити її — тоді стежимо заново.
+    private func refreshFolder() {
+        CFPreferencesAppSynchronize("com.apple.screencapture" as CFString)
+        let now = screenshotFolder()
+        guard now.standardizedFileURL.path != folder.standardizedFileURL.path
+              || !FileManager.default.fileExists(atPath: folder.path) else { return }
+        folder = now
+        log.notice("тека знімків тепер \(self.folder.path, privacy: .public)")
+        watchFolder()
     }
 
     private func checkFolder() {
-        for url in screenshots(in: folder) where !seen.contains(url.lastPathComponent) {
-            seen.insert(url.lastPathComponent)
+        for url in screenshots(in: folder) {
+            let made = creationDate(url)
+            guard made > seenUntil else { continue }
+            seenUntil = made
             if autoOpen { open(url) }
         }
     }
@@ -102,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: меню
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        refreshFolder()
         menu.removeAllItems()
         add("Розмітити останній знімок", #selector(openLatest)).isEnabled = !screenshots(in: folder).isEmpty
         add("Розмітити картинку з буфера", #selector(openPasteboard)).isEnabled =

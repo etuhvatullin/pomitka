@@ -297,12 +297,14 @@ func screenshots(in dir: URL) -> [URL] {
     let fm = FileManager.default
     guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey],
                                                   options: [.skipsHiddenFiles]) else { return [] }
-    func created(_ url: URL) -> Date {
-        (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-    }
     return items
         .filter { $0.pathExtension.lowercased() == "png" }
-        .map { ($0, created($0)) }
+        .map { ($0, creationDate($0)) }
         .sorted { $0.1 < $1.1 }
         .map(\.0)
+}
+
+/// Коли файл зʼявився. Перейменування дату не міняє, тож за нею старий знімок не сплутати з новим.
+func creationDate(_ url: URL) -> Date {
+    (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
 }

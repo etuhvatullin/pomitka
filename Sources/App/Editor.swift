@@ -202,7 +202,8 @@ final class EditorWindowFrame: NSWindow {
     weak var editor: EditorView?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+        // Лише значущі клавіші: з увімкненим Caps Lock ⌘C має працювати так само.
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
               let editor else { return super.performKeyEquivalent(with: event) }
         let edit: [UInt16: Selector] = [
             8: #selector(NSText.copy(_:)), 9: #selector(NSText.paste(_:)), 7: #selector(NSText.cut(_:)),
@@ -385,6 +386,7 @@ final class EditorWindow: NSWindowController, NSWindowDelegate {
 
     /// Закрити без копіювання, коли вже щось намальовано, — лише після підтвердження.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        editor.commitText()   // недописаний підпис — теж позначка, яку шкода втратити
         guard !copied, !editor.marks.isEmpty else { return true }
         let a = NSAlert()
         a.messageText = "Закрити без копіювання?"
